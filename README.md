@@ -8,7 +8,7 @@ Data:2025-08-05
 
 ### How to use this script:
 
-1. Save the script as `encoding_checker.py`
+1. Save the script as `gbkDetect.py`
 2. Install the required dependency:
 
 ```
