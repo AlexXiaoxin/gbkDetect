@@ -30,35 +30,53 @@ def has_chinese_text(text):
             return True
     return False
 
-def find_chinese_garbled_chars(text):
+def find_chinese_garbled_chars(text, encoding):
     """
-    Find potentially garbled Chinese characters
+    Find potentially garbled Chinese characters with improved detection
     """
     garbled_chars = []
     lines = text.split('\n')
     
-    for line_num, line in enumerate(lines, 1):
-        for i, char in enumerate(line):
-            # Check for common garbled patterns in Chinese text
-            if is_chinese_character(char):
-                # Check if surrounding characters look like garbled text
-                # This is a simple heuristic - looks for non-Chinese characters in Chinese text
-                if i > 0 and i < len(line) - 1:
-                    prev_char = line[i-1]
-                    next_char = line[i+1]
-                    
-                    # If Chinese character is surrounded by non-Chinese characters
-                    # it might be correctly encoded
-                    if not is_chinese_character(prev_char) and not is_chinese_character(next_char):
-                        # This is a simple check - in real cases, more sophisticated checks needed
-                        pass
-                        
-            # Look for typical garbled patterns like "锟斤拷", "锘", etc.
-            if '\ufffd' in char or (char.encode('utf-8', errors='ignore').decode('utf-8', errors='ignore') != char and 
-                                    len(char.encode('utf-8', errors='ignore')) > 1):
-                garbled_chars.append((line_num, i, char))
+    # Common garbled patterns
+    garbled_patterns = [
+        '锟斤拷', '锘', '烫烫烫', '屯屯屯',
+        '��',  # Replacement character
+        '\ufffd',  # Unicode replacement character
+        '?',  # Common replacement when decoding fails
+    ]
     
-    return garbled_chars
+    # Statistical analysis of Chinese character distribution
+    chinese_chars_in_line = []
+    for line_num, line in enumerate(lines, 1):
+        chinese_count = 0
+        for i, char in enumerate(line):
+            if is_chinese_character(char):
+                chinese_count += 1
+                
+                # Check for invalid encoding sequences
+                try:
+                    encoded = char.encode(encoding, errors='strict')
+                    decoded = encoded.decode(encoding, errors='strict')
+                    if decoded != char:
+                        garbled_chars.append((line_num, i, char, "ENCODING_MISMATCH"))
+                except UnicodeError:
+                    garbled_chars.append((line_num, i, char, "INVALID_ENCODING"))
+                
+                # Check for common garbled patterns
+                for pattern in garbled_patterns:
+                    if pattern in line[i:i+len(pattern)]:
+                        garbled_chars.append((line_num, i, char, "COMMON_PATTERN"))
+            
+            # Check for isolated Chinese characters (potential encoding issues)
+            if is_chinese_character(char):
+                context = line[max(0,i-2):min(len(line),i+3)]
+                chinese_in_context = sum(1 for c in context if is_chinese_character(c))
+                if chinese_in_context < 2:  # Isolated Chinese character
+                    garbled_chars.append((line_num, i, char, "ISOLATED_CHARACTER"))
+        
+        chinese_chars_in_line.append((line_num, chinese_count))
+    
+    return garbled_chars, chinese_chars_in_line
 
 def convert_to_gbk(file_path):
     """
@@ -117,7 +135,7 @@ def check_gbk_file_for_garbled_text(file_path):
 
 def process_cpp_files(directory):
     """
-    Process all .cpp files in the directory
+    Process all .cpp files in the directory with enhanced detection
     """
     cpp_files = list(Path(directory).rglob("*.cpp"))
     
@@ -126,7 +144,7 @@ def process_cpp_files(directory):
     for file_path in cpp_files:
         print(f"\nProcessing: {file_path}")
         
-        # Detect encoding
+        # Detect encoding with confidence threshold
         detected_encoding = detect_encoding(file_path)
         print(f"Detected encoding: {detected_encoding}")
         
@@ -137,33 +155,60 @@ def process_cpp_files(directory):
         # Normalize encoding name
         detected_encoding = detected_encoding.lower()
         
-        if detected_encoding.startswith('gb') or detected_encoding.startswith('windows'):
-            # File is already in GBK or similar encoding (like GB2312, GB18030, Windows-1252)
-            print(f"{file_path} is already in GBK-compatible encoding")
+        try:
+            # Read file with detected encoding
+            with open(file_path, 'rb') as f:
+                raw_content = f.read()
             
-            # Check for garbled Chinese text
-            has_garbled = check_gbk_file_for_garbled_text(file_path)
-            if has_garbled:
-                print(f"\033[31mWarning: Found garbled text in {file_path}\033[0m")
+            # Decode content
+            try:
+                content = raw_content.decode(detected_encoding)
+            except UnicodeDecodeError:
+                # Try common fallback encodings
+                for enc in ['utf-8', 'gbk', 'gb18030', 'big5']:
+                    try:
+                        content = raw_content.decode(enc)
+                        detected_encoding = enc
+                        print(f"Used fallback encoding: {enc}")
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    print(f"Failed to decode {file_path} with any encoding")
+                    continue
+            
+            # Enhanced garbled character detection
+            garbled_chars, chinese_stats = find_chinese_garbled_chars(content, detected_encoding)
+            total_chinese = sum(count for _, count in chinese_stats)
+            
+            print(f"\nFile: {file_path}")
+            print(f"Encoding: {detected_encoding.upper()}")
+            print(f"Total Chinese characters: {total_chinese}")
+            
+            if garbled_chars:
+                print("\n\033[31mGARBLED TEXT DETECTED:\033[0m")
+                for line_num, pos, char, reason in garbled_chars:
+                    print(f"Line {line_num}, Pos {pos}: {char} (Reason: {reason})")
+                
+                # Provide conversion suggestions
+                print("\n\033[33mSUGGESTED FIXES:\033[0m")
+                if detected_encoding.startswith('gb'):
+                    print("1. Try converting to UTF-8:")
+                    print(f"   iconv -f {detected_encoding} -t utf-8 {file_path} > {file_path}.utf8")
+                else:
+                    print("1. Try converting to GBK:")
+                    print(f"   iconv -f {detected_encoding} -t gbk {file_path} > {file_path}.gbk")
+                
+                print("2. Manually check the reported positions")
+                print("3. Verify the original file encoding")
             else:
-                print(f"No obvious garbled text found in {file_path}")
-        else:
-            # Convert to GBK
-            print(f"Converting {file_path} from {detected_encoding} to GBK...")
-            if convert_to_gbk(file_path):
-                print(f"Successfully converted {file_path}")
-            else:
-                print(f"Failed to convert {file_path}")
+                print("\n\033[32mNo garbled Chinese text detected\033[0m")
+                
+        except Exception as e:
+            print(f"Error processing {file_path}: {e}")
 
 if __name__ == "__main__":
-    # Get directory from user input or use current directory
-    directory = input("Enter directory path (or press Enter for current directory): ").strip()
-    if not directory:
-        directory = "."
-    
-    if not os.path.exists(directory):
-        print(f"Directory {directory} does not exist")
-        exit(1)
-    
+    # Automatically process current directory
+    directory = "."
     process_cpp_files(directory)
     print("\nProcessing complete.")

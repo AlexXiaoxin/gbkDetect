@@ -10,7 +10,7 @@
 
 ### 使用方法：
 
-1. 将脚本保存为 `encoding_checker.py`
+1. 将脚本保存为 `gbkDetect.py`
 
 2. 安装所需依赖：
    
