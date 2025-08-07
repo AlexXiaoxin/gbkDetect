@@ -5,6 +5,7 @@ import os
 import chardet
 import codecs
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 def detect_encoding(file_path):
     """
